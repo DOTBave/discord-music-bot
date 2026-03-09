@@ -1,12 +1,12 @@
 import discord
 import os
 import yt_dlp
-#import pathlib
+from pathlib import Path
 from dotenv import load_dotenv
 
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
-    'noplaylist': 'True',
+    'noplaylist': True,
 }
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
@@ -17,6 +17,7 @@ FFMPEG_OPTIONS = {
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 FFMPEG_PATH = os.getenv('FFMPEG_PATH', 'ffmpeg')
+MUSIC_PATH = Path.cwd() / 'Music'
 
 # Define "Intents"
 intents = discord.Intents.default()
@@ -33,14 +34,20 @@ async def on_ready():
 # For sending and replying to messages
 @client.event
 async def on_message(message):
-    def check_if_done(error, terminated=False):
+    def check_if_done(error):
+        vc = message.guild.voice_client
+        was_stopped = getattr(vc, 'was_stopped', False)
+        current_title = getattr(vc, 'current_title', "Unknown Song")
         if error:
             print(f"Audio stopped due to error: {error}")
-        elif terminated:
-            coro = message.channel.send('Song terminated.')
-            client.loop.create_task(coro)
+        elif was_stopped:
+            vc.was_stopped = False
+            # these two lines were disabled due to slow speed
+            # they are now in the if $stop block
+            # coro = message.channel.send('Song terminated.')
+            # client.loop.create_task(coro)
         else:
-            coro = message.channel.send(f"Song finished playing: **{title}**")
+            coro = message.channel.send(f"Song finished playing: **{current_title}**")
             client.loop.create_task(coro)
     if message.author == client.user:
         return
@@ -51,7 +58,7 @@ async def on_message(message):
     if message.content == '$dir':
         extensions = ('mp3', 'mp4', 'wav', 'm4a', 'ogg')
         filenames = []
-        for file in os.listdir(os.getcwd()):
+        for file in os.listdir(MUSIC_PATH):
             if file.endswith(extensions):
                 filenames.append(file)
         await message.channel.send(f"Available files: " + ', '.join(filenames))
@@ -66,23 +73,35 @@ async def on_message(message):
         else:
             await message.channel.send('You need to be in a voice channel.')
     if message.content.startswith('$play '):
-        newMessage = message.content.removeprefix('$play ')
+        newmessage = message.content.removeprefix('$play ')
         voice_client = message.guild.voice_client
 
         if voice_client and voice_client.is_connected():
+            voice_client.was_stopped = False
             async with message.channel.typing():
                 b_options = ""
                 try:
-                    if newMessage.startswith('-file '):
-                        filePath = newMessage.removeprefix('-file ')
-                        title = filePath
-                        # voice_client.play(localFileName, after=check_if_done)
+                    if newmessage.startswith('-file'):
+                        userinputfile = newmessage.removeprefix('-file').lstrip()
+                        print(userinputfile)
+                        # print(filename)
+                        voice_client.current_title = os.path.basename(userinputfile)
+                        print(voice_client.current_title)
+                        filepath = Path(MUSIC_PATH).joinpath(voice_client.current_title).resolve()
+                        print(MUSIC_PATH)
+                        print(filepath)
+                        if not userinputfile.startswith(os.path.abspath(MUSIC_PATH)) and userinputfile != voice_client.current_title:
+                            await message.channel.send('Illegal Directory')
+                            return
+                        if not filepath.exists():
+                            await message.channel.send('File not found.')
+                            return
                     else:
                     # Url extraction
                         with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-                            info = ydl.extract_info(newMessage, download=False)
-                            filePath = info['url']
-                            title = info['title']
+                            info = ydl.extract_info(newmessage, download=False)
+                            filepath = info['url']
+                            voice_client.current_title = info['title']
                             # Extract the security headers ---
                             headers = info.get('http_headers', {})
                             header_args = ""
@@ -94,7 +113,7 @@ async def on_message(message):
                             if header_args:
                                 b_options += f' -headers "{header_args}"'
                     source = discord.FFmpegOpusAudio(
-                        filePath,
+                        filepath,
                         executable=FFMPEG_PATH,
                         before_options=b_options,
                         options='-vn'
@@ -103,7 +122,7 @@ async def on_message(message):
 
                     # audio_source = discord.FFmpegPCMAudio(audioFileName)
                     #voice_client.play(source)
-                    await message.channel.send(f'Playing **{title}**.')
+                    await message.channel.send(f'Playing **{voice_client.current_title}**.')
                 except Exception as e:
                     await message.channel.send(f'Error occurred: {e}')
         else:
@@ -111,11 +130,16 @@ async def on_message(message):
     if message.content.startswith('$stop'):
         voice_client = message.guild.voice_client
         if voice_client and voice_client.is_connected():
+            voice_client.was_stopped = True
             voice_client.stop()
-            check_if_done(None,True)
+            await message.channel.send('Song Terminated')
+            # check_if_done(None)
             # await message.channel.send('Stopped.')
+        else:
+            await message.channel.send('Not in a voice channel.')
+            return
     if message.content == '$👍':
-        await message.channel.send('Thanks 👍')
+        await message.channel.send('Thanks ❤️')
     elif message.content == '$👎':
-        await message.channel.send('Sorry :(')
+        await message.channel.send('Sorry (')
 client.run(TOKEN)
