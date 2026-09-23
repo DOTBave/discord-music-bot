@@ -1,9 +1,26 @@
+# 凭证
 .env
-__pycache__/
-*.pyc
-*.mp3
-*.mp4
-*.wav
+.env.*
+cookies*
 
+# 音频目录
+Music/
+
+# 虚拟环境
+__pycache__/
+*.py[cod]
+*$py.class
 .venv/
 venv/
+ENV/
+
+# IDE configs
+.idea/
+.vscode/
+*.swp
+
+# 备份文件
+*.BACKUP
+*.COPY
+backup*.py
+*copy*.py
