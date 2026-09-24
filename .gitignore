@@ -1,11 +1,13 @@
 # 凭证
 .env
 .env.*
+!.env.example
 cookies*
 
 # 音频与其他目录
 Music/
-etc/
+#此为CS2 科隆Major彩蛋，可选（可在main.py禁用后删除）
+#etc/
 
 # 虚拟环境
 __pycache__/
@@ -26,6 +28,9 @@ ENV/
 backup*.py
 *copy*.py
 
+# 打包文件
+*.tar
+*.tar.gz
+
 # 其他文件
-run.sh
-database.py
+.DS_Store
