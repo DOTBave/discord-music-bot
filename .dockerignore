@@ -1,7 +1,24 @@
 .git
 .idea
-Music/
 __pycache__/
 *.pyc
 .venv/
 venv/
+
+# 运行时挂载的本地音频与彩蛋素材
+Music/
+#彩蛋文件夹
+#etc/
+
+# 凭证（构建上下文里不需要）
+.env
+.env.*
+cookies*
+
+# 打包文件
+*.tar
+*.tar.gz
+*.BACKUP
+*.COPY
+backup*.py
+*copy*.py
