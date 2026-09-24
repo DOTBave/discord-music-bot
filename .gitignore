@@ -3,8 +3,9 @@
 .env.*
 cookies*
 
-# 音频目录
+# 音频与其他目录
 Music/
+etc/
 
 # 虚拟环境
 __pycache__/
@@ -24,3 +25,7 @@ ENV/
 *.COPY
 backup*.py
 *copy*.py
+
+# 其他文件
+run.sh
+database.py

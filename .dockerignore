@@ -1,6 +1,5 @@
 .git
 .idea
-Music/
 __pycache__/
 *.pyc
 .venv/

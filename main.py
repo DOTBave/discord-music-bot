@@ -5,6 +5,7 @@ import os
 import yt_dlp
 print(yt_dlp.version.__version__)
 import asyncio
+import copy
 import re
 import urllib.parse
 #from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -35,8 +36,20 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 DENO_PATH = os.getenv('DENO')
+COOKIE_FILE = os.getenv('COOKIES_FILE', 'cookies.txt')
 
 server_states = {}
+
+# yt-dlp 最近一次失败的原始报错，用于在 Discord 里显示真正原因（而不是统一显示"网络错误"）
+LAST_YTDLP_ERROR = None
+
+# YouTube 客户端尝试顺序。**不要**在 YDL_OPTIONS 里写死 player_client：
+# 钉死单个客户端时，YouTube 一旦收紧策略就没有退路。用 .env 覆盖，例如：
+#   YOUTUBE_CLIENTS=android_vr,mweb,tv_downgraded
+YOUTUBE_CLIENTS = [
+    c.strip() for c in os.getenv('YOUTUBE_CLIENTS', 'android_vr,mweb').split(',') if c.strip()
+]
+YTDLP_VERBOSE = os.getenv('YTDLP_VERBOSE', '').lower() in ('1', 'true', 'yes')
 
 # gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 # system_instruction="You are a casual chat assistant on Discord. No matter what the user asks, your response must be extremely brief and direct. Strictly limit the length of your replies: a maximum of 1 to 3 sentences. Absolutely do not write long-winded paragraphs, create long lists, or include any fluff."
@@ -51,17 +64,19 @@ YDL_OPTIONS = {
     ),
     'noplaylist': True,
     'default_search': 'ytsearch',
-    'cookiefile': 'cookies.txt',
+    'cookiefile': COOKIE_FILE,
     'source_address': '0.0.0.0',
     'js_runtimes': {'deno': {'path': DENO_PATH}},
     'remote_components': ['ejs:github'],
-    'extractor_args': {
-        'youtube': {'player_client': ['web']},
-    },
+    # 注意：这里不再硬编码 'player_client'，YouTube 的客户端在 source_obj_compiler 里逐个尝试
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
         #'Referer': 'https://www.bilibili.com/'
-    }
+    },
+    'socket_timeout': 20,
+    'retries': 2,
+    'extractor_retries': 1,
+    'verbose': YTDLP_VERBOSE,
 }
 
 # ---------- Bot 初始化 ----------
@@ -148,6 +163,13 @@ async def on_ready():
                 print(f"Successfully cleared ghost voice connection in: {guild.name}")
             except Exception as e:
                 print(f"Failed to clear ghost voice connection in {guild.name}: {e}")
+    # 启动自检：cookie 文件缺失 + JS 运行时不可用，是 YouTube 报
+    # "Sign in to confirm you're not a bot" 的两个最常见原因，先在这里说清楚
+    cookie_path = Path(COOKIE_FILE)
+    if not cookie_path.exists():
+        print(f"[警告] 找不到 cookie 文件：{cookie_path.resolve()}（相对路径基于启动目录），YouTube 可能要求登录验证")
+    if not DENO_PATH or not Path(DENO_PATH).exists():
+        print(f"[警告] DENO 路径不可用：{DENO_PATH!r}，yt-dlp 将无法执行 JS 挑战（--js-runtimes 会显示 deno (unavailable)）")
     # 同步命令
     global synced_flag
     if not synced_flag:
@@ -166,6 +188,8 @@ def get_state(guild_id):
             #'loop': False,
             'was_stopped': False,
             'skipped': {'was_skipped': False, 'skipped_title': None},
+            # queue[0] 播放时会被记到这里，队列的增删改都不再依赖 queue[0] 的位置
+            'current': None,
             'current_title': None,
             'current_url': None,
             'local_file': False,
@@ -176,7 +200,8 @@ def get_state(guild_id):
 async def audio_after(error, channel):
     """播放完毕后处理"""
     state = get_state(channel.guild.id)
-    current_item = state['queue'][0] if state['queue'] else {}
+    # 只认正在播放的那一条，队列被 /stop 清空或中途插入新歌都不会影响这里
+    current_item = state['current'] or {}
     is_silent = current_item.get('silent', False)
 
     if error:
@@ -188,14 +213,19 @@ async def audio_after(error, channel):
         state['skipped']['was_skipped'] = False
         if not is_silent:
             await channel.send(f"Skipped: **{state['skipped']['skipped_title']}**")
-    elif state['queue'] and state['queue'][0]['loop']:
-        bot.loop.create_task(play_next(channel))
-        return
     else:
         if not is_silent:
             await channel.send(f"Song finished playing: **{state['current_title']}**")
-    if state['queue']:
-        state['queue'].pop(0)
+
+    # 出队当前曲目（放在循环判断之前，避免同一首在队列里越堆越多）
+    if current_item in state['queue']:
+        state['queue'].remove(current_item)
+    if state['current'] is current_item:
+        state['current'] = None
+
+    if current_item.get('loop', False):
+        # 循环：放回队首，下面的请求照常排在后面，不会再被堵住
+        state['queue'].insert(0, current_item)
     bot.loop.create_task(play_next(channel, was_silent=is_silent))
 
 # async def play_next(channel, voice_client, was_silent: bool = False):
@@ -221,138 +251,195 @@ async def play_next(channel, was_silent: bool = False):
         return
 
     state['is_loading'] = True
-    
+
+    # 无论走哪条分支，is_loading 都必须在退出时复位，否则播放器会永久卡死
     try:
         source = None
         title = "Unknown"
+        url = None
 
+        # 只"看"队首，真正的出队交给 audio_after（播放结束/循环判定处）
         current_item = state['queue'][0]
-        
+
         if current_item['type'] == 'url':
-            url = state['queue'][0]['data']
+            url = current_item['data']
             source, title = await source_obj_compiler(url)
         elif current_item['type'] == 'file':
-            url = state['queue'][0]['data']
+            url = current_item['data']
             title = Path(url).name
             source = discord.FFmpegOpusAudio(url, executable=FFMPEG_PATH, options='-vn')
             state['local_file'] = True
 
         if source:
+            state['current'] = current_item
             state['current_title'] = title
             state['current_url'] = url
-            #if not state['loop']:
-            if state['queue'][0]['outputFirstTime']:
-                if not state['queue'][0].get('silent', False):
+            if current_item.get('outputFirstTime'):
+                if not current_item.get('silent', False):
                     await channel.send(f"Now playing: **{title}**")
-                state['queue'][0]['outputFirstTime'] = False
-                
+                current_item['outputFirstTime'] = False
+
             voice_client.play(source, after=lambda e: bot.loop.create_task(audio_after(e, channel)))
-            state['is_loading'] = False
         else:
-            if not state['queue'][0].get('silent', False):
-                await channel.send(f"Failed to play: {url}, skipping...")
+            if not current_item.get('silent', False):
+                reason = f"（{LAST_YTDLP_ERROR}）" if LAST_YTDLP_ERROR else ""
+                await channel.send(f"Failed to play: {url}, skipping...{reason}")
             # 继续尝试播放下一首
-            state['is_loading'] = False
             if state['queue']:
                 state['queue'].pop(0)
+            if state['current'] is current_item:
+                state['current'] = None
             bot.loop.create_task(play_next(channel))
-        #if not state['queue'][0]['loop'] and not state['skipped']['was_skipped']:
-        #    state['queue'].pop(0)
     except Exception as e:
         print(f"Error in play_next: {e}")
         await channel.send("An unexpected error occurred. Skipping... [from func play_next()]")
 
-        state['is_loading'] = False
         if state['queue']:
             state['queue'].pop(0)
+        state['current'] = None
         if channel.guild.voice_client and channel.guild.voice_client.is_connected():
             bot.loop.create_task(play_next(channel))
         else:
             state['queue'].clear()
-        
-async def source_obj_compiler(url: str):
+    finally:
+        state['is_loading'] = False
+
+def build_play_source(info):
+    """把 yt-dlp 抽取结果转成 ffmpeg 音频源，返回 (source, title, stream_url)。"""
+    stream_url = info.get('url')
+    if not stream_url:
+        return None, info.get('title', 'Unknown'), None
+
+    title = info.get('title', 'Unknown')
+    headers = info.get('http_headers', {}) or info.get('https_headers', {})
+
+    b_options = '-re -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+    if headers:
+        header_str = "".join([f"{k}: {v}\r\n" for k, v in headers.items()])
+        b_options += f' -headers "{header_str}"'
+
+    a_options = '-vn '
+
+    source = discord.FFmpegOpusAudio(
+        stream_url,
+        before_options=b_options,
+        options=a_options,
+        executable=FFMPEG_PATH
+    )
+    return source, title, stream_url
+
+
+def is_youtube_url(url: str) -> bool:
+    return 'youtube.com' in url or 'youtu.be' in url
+
+
+def is_retryable_ytdlp_error(err_text: str) -> bool:
+    """判断这次失败是否值得换客户端重试。
+
+    "Sign in to confirm you're not a bot" / 无可用格式 / 403 这类是客户端相关的；
+    "Video unavailable" / "Private video" 这类换个客户端也一样，不该在原视频上反复重试。
+    """
+    if not err_text:
+        return False
+    low = err_text.lower()
+    if any(s in low for s in ('not a bot', 'sign in', 'login_required', 'drm',
+                              'no video formats', 'requested format', '403', 'unable to extract')):
+        return True
+    return not any(s in low for s in ('video unavailable', 'private video', 'removed',
+                                      'does not exist', 'members-only', 'age'))
+
+
+def extract_with_client(video_url, client=None):
+    """用指定 YouTube 客户端抽取一次并返回 info；失败返回 None（原因记在 LAST_YTDLP_ERROR）。"""
+    global LAST_YTDLP_ERROR
+
+    options = copy.deepcopy(YDL_OPTIONS)
+    options['extract_flat'] = False
+    if client:
+        options.setdefault('extractor_args', {}).setdefault('youtube', {})['player_client'] = [client]
+        print(f"[yt-dlp] trying youtube player_client={client}")
     try:
-        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-            info = await asyncio.to_thread(ydl.extract_info, url, download=False)
-            
-            if 'entries' in info:
-                entries = info.get('entries', [])
-                
-                for entry in entries:
-                    if not entry:
-                        continue
-                    ie_key = entry.get('ie_key', '')
-                    entry_url = entry.get('url', '') or ''
-                    if ie_key in ['YoutubeChannel', 'YoutubeTab', 'YoutubePlaylist']:
-                        continue
-                    if '/channel/' in entry_url or '/@' in entry_url or '/playlist' in entry_url:
-                        continue
-                    
-                    try:
-                        if entry.get('_type') == 'url' or not entry.get('url'):
-                            video_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry['id']}"
-                            deep_options = YDL_OPTIONS.copy()
-                            deep_options['extract_flat'] = False
-                            
-                            with yt_dlp.YoutubeDL(deep_options) as ydl_deep:
-                                entry_info = await asyncio.to_thread(ydl_deep.extract_info, video_url, download=False)
-                        else:
-                            entry_info = entry
-                        
-                        stream_url = entry_info.get('url')
-                        if not stream_url:
-                            print(f"Result '{entry_info.get('title')}' missing stream URL. Trying next search result...")
-                            continue
-                            
-                        title = entry_info.get('title', 'Unknown')
-                        headers = entry_info.get('http_headers', {}) or entry_info.get('https_headers', {})
-                        
-                        b_options = '-re -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
-                        if headers:
-                            header_str = "".join([f"{k}: {v}\r\n" for k, v in headers.items()])
-                            b_options += f' -headers "{header_str}"'
-                            
-                        a_options = '-vn '
-                        
-                        source = discord.FFmpegOpusAudio(
-                            stream_url,
-                            before_options=b_options,
-                            options=a_options,
-                            executable=FFMPEG_PATH
-                        )
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+        if info and not info.get('entries'):
+            return info
+        LAST_YTDLP_ERROR = "extractor returned no playable entry"
+    except Exception as e:
+        LAST_YTDLP_ERROR = str(e)
+        print(f"[yt-dlp] player_client={client or 'default'} failed: {e}")
+    return None
+
+
+def extract_with_clients(video_url):
+    """按 YOUTUBE_CLIENTS 逐个尝试（默认行为在调用方已经试过了，这里不重复）。
+
+    默认客户端撞上 "Sign in to confirm you're not a bot" 时换下一个客户端；
+    非 YouTube 站点、以及"视频本身不可用"这类错误都不做客户端轮换，
+    避免在被 YouTube 风控的 IP 上把请求量放大好几倍。
+    """
+    if not is_youtube_url(video_url) or not is_retryable_ytdlp_error(LAST_YTDLP_ERROR):
+        return extract_with_client(video_url)
+    for client in YOUTUBE_CLIENTS:
+        info = extract_with_client(video_url, client)
+        if info:
+            return info
+    return None
+
+
+async def source_obj_compiler(url: str):
+    global LAST_YTDLP_ERROR
+    LAST_YTDLP_ERROR = None
+    try:
+        try:
+            with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+                info = await asyncio.to_thread(ydl.extract_info, url, download=False)
+        except Exception as e:
+            # 直链/播放地址在这一步就会撞 bot 墙，因此换客户端重试必须包住整个抽取
+            LAST_YTDLP_ERROR = str(e)
+            print(f"First extraction failed ({e}); retrying with other YouTube clients...")
+            info = None
+
+        if info and info.get('entries'):
+            entries = info.get('entries') or []
+
+            for entry in entries:
+                if not entry:
+                    continue
+                ie_key = entry.get('ie_key', '')
+                entry_url = entry.get('url', '') or ''
+                if ie_key in ['YoutubeChannel', 'YoutubeTab', 'YoutubePlaylist']:
+                    continue
+                if '/channel/' in entry_url or '/@' in entry_url or '/playlist' in entry_url:
+                    continue
+
+                video_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry['id']}"
+                entry_info = await asyncio.to_thread(extract_with_clients, video_url)
+
+                if entry_info:
+                    source, title, stream_url = build_play_source(entry_info)
+                    if source:
                         return source, title
-                        
-                    except Exception as entry_err:
-                        print(f"Search result failed deep extraction ({entry_err}). Trying next result...")
-                        continue
-                
-                print("Error: None of the search results could be played.")
-                return None, None
-            
-            else:
-                stream_url = info.get('url')
-                if not stream_url:
-                    return None, None
-                    
-                title = info.get('title', 'Unknown')
-                headers = info.get('http_headers', {}) or info.get('https_headers', {})
-                
-                b_options = '-re -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
-                if headers:
-                    header_str = "".join([f"{k}: {v}\r\n" for k, v in headers.items()])
-                    b_options += f' -headers "{header_str}"'
-                    
-                a_options = '-vn '
-                
-                source = discord.FFmpegOpusAudio(
-                    stream_url,
-                    before_options=b_options,
-                    options=a_options,
-                    executable=FFMPEG_PATH
-                )
+                    print(f"Result '{entry_info.get('title')}' missing stream URL. Trying next search result...")
+                else:
+                    print(f"Search result failed extraction ({LAST_YTDLP_ERROR}). Trying next result...")
+
+            print("Error: None of the search results could be played.")
+            return None, None
+
+        if not info:
+            info = await asyncio.to_thread(extract_with_clients, url)
+
+        if info:
+            source, title, stream_url = build_play_source(info)
+            if source:
                 return source, title
+            print(f"Result '{info.get('title')}' missing stream URL.")
+            return None, None
+
+        return None, None
 
     except Exception as e:
+        LAST_YTDLP_ERROR = str(e)
         print(f"Critical error when compiling Source obj: {e}")
         return None, None
 
@@ -448,7 +535,11 @@ async def stop(interaction: discord.Interaction):
     voice_client = interaction.guild.voice_client
     state = get_state(interaction.guild.id)
     state['queue'].clear()  # Clear the queue when stopping
-    if voice_client and voice_client.is_playing():
+    state['current'] = None
+    # 若此时正卡在 yt-dlp 抽取（is_loading）里，标记后下次点歌不会被卡死
+    was_busy = state['is_loading']
+    state['is_loading'] = False
+    if voice_client and (voice_client.is_playing() or was_busy):
         state['was_stopped'] = True
         voice_client.stop()
 
@@ -482,8 +573,9 @@ async def play(
         if interaction.user.voice:
             try:
                 voice_client = await interaction.user.voice.channel.connect(self_deaf=True)
-                # new playlist
-                state['queue'] = []
+                # 重连后只清掉"当前曲目"与加载标记，队列保留（原来会连队列一起清空）
+                state['current'] = None
+                state['is_loading'] = False
             except Exception as e:
                 await interaction.followup.send(f"Cannot join voice: {e}")
                 return
