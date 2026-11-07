@@ -18,6 +18,8 @@
 - Python 3.12（Docker 镜像里已经装好）
 - ffmpeg、deno：yt-dlp 取流和 JS 挑战用
 - cookies.txt：B 站部分内容（如高码率）需要登录态
+- Docker 构建使用 `requirements.lock`（uv 生成的跨平台精确锁文件），本地开发也可以直接 `pip install -r requirements.txt`
+- 镜像里的 Deno 版本固定在 Dockerfile 的 `ARG DENO_VERSION`，构建时按 CPU 架构下载并校验 sha256
 
 ## 配置
 
@@ -71,6 +73,8 @@ services:
 
 非交互环境（如 `docker run -d`）下控制台输入会被自动禁用；Dockerfile 里设置了 `PYTHONUNBUFFERED=1`，日志可以用 `docker logs -f my-music-bot` 实时查看。
 
+镜像以非 root 用户 `app`（uid 1000）运行，挂载进去的 `Music/`、`etc/`、`cookies.txt` 需要对 uid 1000 可读。若 `cookies.txt` 是 600 权限，先 `chmod 644 cookies.txt`，或改用 `docker run --user "$(id -u):$(id -g)" ...`。
+
 本地：
 
 ```bash
@@ -83,11 +87,14 @@ python main.py
 ## 目录
 
 ```
-main.py         主程序：命令、队列、yt-dlp 抽取
-easter_egg.py   彩蛋模块，与主程序只通过 handle() 交互
-Music/          本地音频，运行时挂载进容器
-etc/            彩蛋素材（图片）
-cookies.txt     B 站/YouTube cookie，不进版本库
+main.py             主程序：命令、队列、yt-dlp 抽取
+easter_egg.py       彩蛋模块，与主程序只通过 handle() 交互
+tests/              回归测试（pytest，不依赖网络/语音）
+Music/              本地音频，运行时挂载进容器
+etc/                彩蛋素材（图片）
+cookies.txt         B 站/YouTube cookie，不进版本库
+requirements.lock   精确依赖锁（Docker 使用）
+.github/workflows/  CI（ruff + pytest + docker build）
 ```
 
 `Music/` 和 `etc/` 都是按**启动目录**的相对路径找的，所以要在仓库根目录运行；Docker 里对应 `/app`。素材缺失不会崩：彩蛋会退化成只发文案。
@@ -104,3 +111,5 @@ cookies.txt     B 站/YouTube cookie，不进版本库
 - `source_obj_compiler()` 返回 3 元组（source, title, error），`build_play_source()` 返回 3 元组（source, title, stream_url）；yt-dlp 的报错改为直接返回，不再存到全局变量，改返回值时记得同步所有解包点（解包数量对不上只会在运行时炸）
 - 队列的出队只在 `audio_after()` 里做，`play_next()` 只"看"队首，不要在两处都 pop
 - `audio_after()` 出队按对象身份（`is`）匹配，而不是比较 dict 是否相等——同一首歌可能被连续点两次
+- 回归测试：`python -m pytest -q`（不依赖网络、Discord token 或语音）；CI 见 `.github/workflows/ci.yml`（ruff + pytest + docker build）
+- 更新依赖锁：`uv pip compile requirements.txt --universal --python-version 3.12 -o requirements.lock`
