@@ -1,4 +1,5 @@
 FROM python:3.12-slim
+ENV PYTHONUNBUFFERED=1
 
 # 安装系统依赖与 ffmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
