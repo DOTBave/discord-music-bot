@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import copy
 import datetime
 import html
@@ -129,7 +130,7 @@ def resolve_cookiefile(path):
     """返回可安全交给 yt-dlp 的 cookies 路径。
 
     yt-dlp 在 YoutubeDL.close() 时会回写 cookies；Docker 以 :ro 挂载时回写会触发
-    [Errno 30] Read-only file system，导致每次抽取都被当成失败。只读时复制到临时目录。
+    [Errno 30] Read-only file system，导致每次抽取都被当成失败。只读时复制到 0600 临时文件。
     """
     cookie_path = Path(path)
     if not cookie_path.is_file():
@@ -137,8 +138,11 @@ def resolve_cookiefile(path):
     if os.access(cookie_path, os.W_OK):
         return str(cookie_path)
     try:
-        temp_path = Path(tempfile.gettempdir()) / 'discord-music-bot-cookies.txt'
+        fd, temp_name = tempfile.mkstemp(prefix='discord-music-bot-cookies-', suffix='.txt')
+        os.close(fd)
+        temp_path = Path(temp_name)
         shutil.copyfile(cookie_path, temp_path)
+        atexit.register(lambda p=temp_path: p.unlink(missing_ok=True))
         print("[信息] cookies 文件只读，已复制到临时目录供 yt-dlp 使用（刷新不会写回宿主机）。")
         return str(temp_path)
     except OSError as exc:
@@ -313,6 +317,9 @@ async def on_voice_state_update(member, before, after):
     if bot.user is None or member.id != bot.user.id:
         return
     if after.channel is not None:
+        return
+    voice_client = member.guild.voice_client
+    if voice_client is not None and voice_client.is_connected():
         return
     state = server_states.pop(member.guild.id, None)
     if state:
@@ -610,11 +617,14 @@ def extract_with_client(video_url, client=None):
         return None, str(e)
 
 
-def extract_with_clients(video_url):
+def extract_with_clients(video_url, initial_error=None):
     """默认客户端失败且错误可重试时，逐个尝试 YOUTUBE_CLIENTS。"""
-    info, error = extract_with_client(video_url)
-    if info:
-        return info, None
+    if initial_error is None:
+        info, error = extract_with_client(video_url)
+        if info:
+            return info, None
+    else:
+        error = initial_error
     if not is_youtube_url(video_url) or not is_retryable_ytdlp_error(error):
         return None, error
     for client in YOUTUBE_CLIENTS:
@@ -648,6 +658,14 @@ async def source_obj_compiler(url: str):
         for entry in info.get('entries') or []:
             if not entry:
                 continue
+            # 非搜索场景（如 B 站多分 P 视频）在 extract_flat=False 下已经拿到完整流信息，
+            # 此时 entry['url'] 是带防盗链的 CDN 直链，不能再送进 extract_with_clients 二次解析（会丢 Referer 报 403）
+            if entry.get('_type') not in ('url', 'url_transparent') and entry.get('url'):
+                source, title, _ = build_play_source(entry)
+                if source:
+                    return source, title, None
+                print(f"Result '{title}' missing stream URL. Trying next result...")
+                continue
             ie_key = entry.get('ie_key', '')
             entry_url = entry.get('url', '') or ''
             if ie_key in ('YoutubeChannel', 'YoutubeTab', 'YoutubePlaylist'):
@@ -670,7 +688,7 @@ async def source_obj_compiler(url: str):
         return None, None, error or "None of the search results could be played"
 
     if not info:
-        info, error = await asyncio.to_thread(extract_with_clients, url)
+        info, error = await asyncio.to_thread(extract_with_clients, url, error)
     if info:
         source, title, _ = build_play_source(info)
         if source:
@@ -935,7 +953,6 @@ async def play(
         print(f"Failed to defer interaction: {e}")
         return
 
-    state = get_state(interaction.guild.id)
     voice_client = interaction.guild.voice_client
     # 清理残留的失效连接，否则 connect() 会抛 Already connected
     if voice_client and not voice_client.is_connected():
@@ -951,6 +968,7 @@ async def play(
             return
         try:
             voice_client = await interaction.user.voice.channel.connect(self_deaf=True)
+            state = get_state(interaction.guild.id)
             state['current'] = None
             state['is_loading'] = False
         except Exception as e:

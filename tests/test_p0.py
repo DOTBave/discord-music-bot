@@ -61,8 +61,19 @@ def test_readonly_cookie_file_is_copied_to_writable_temp(tmp_path):
     resolved = main.resolve_cookiefile(str(src))
     assert resolved is not None
     assert resolved != str(src)
-    assert Path(resolved).is_file()
-    Path(resolved).unlink(missing_ok=True)
+    resolved_path = Path(resolved)
+    assert resolved_path.is_file()
+    assert (resolved_path.stat().st_mode & 0o077) == 0
+    resolved_path.unlink(missing_ok=True)
+
+
+def test_davey_locked_compatible_with_discord_py():
+    repo_root = Path(__file__).resolve().parent.parent
+    lock_text = (repo_root / "requirements.lock").read_text(encoding="utf-8")
+    if "discord-py==2.7.1" in lock_text:
+        assert "davey==0.1." in lock_text, (
+            "discord.py 2.7.1 is incompatible with davey>=0.2.0 (causes silent voice playback)"
+        )
 
 
 def test_build_audio_options_quotes_headers():
@@ -279,3 +290,73 @@ def test_finished_track_advances_queue():
             main.server_states.pop(guild.id, None)
 
     asyncio.run(scenario())
+
+
+def test_extract_with_clients_skips_default_when_initial_error_given(monkeypatch):
+    calls = []
+
+    def fake_extract_with_client(video_url, client=None):
+        calls.append(client)
+        if client == "android_vr":
+            return {"url": "https://cdn.example.com/a.m4a", "title": "Song"}, None
+        return None, "Sign in to confirm you are not a bot"
+
+    monkeypatch.setattr(main, "extract_with_client", fake_extract_with_client)
+    monkeypatch.setattr(main, "YOUTUBE_CLIENTS", ["android_vr", "mweb"])
+    info, err = main.extract_with_clients(
+        "https://www.youtube.com/watch?v=abc",
+        initial_error="Sign in to confirm you are not a bot",
+    )
+    assert err is None
+    assert info["title"] == "Song"
+    assert calls == ["android_vr"]
+
+
+def test_source_obj_compiler_uses_extracted_entries_directly(monkeypatch):
+    class DummyYDL:
+        def __init__(self, opts):
+            self.opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {
+                "_type": "playlist",
+                "entries": [
+                    {
+                        "_type": "video",
+                        "title": "Bilibili P1",
+                        "url": "https://upos.bilivideo.com/stream.m4s",
+                        "http_headers": {"Referer": "https://www.bilibili.com"},
+                    }
+                ],
+            }
+
+    reextract_called = False
+
+    def fail_if_called(*args, **kwargs):
+        nonlocal reextract_called
+        reextract_called = True
+        return None, "should not re-extract CDN stream URL"
+
+    built_headers = {}
+
+    def fake_build_play_source(info):
+        built_headers.update(info.get("http_headers") or {})
+        return FakeSource(), info["title"], info["url"]
+
+    monkeypatch.setattr(main.yt_dlp, "YoutubeDL", DummyYDL)
+    monkeypatch.setattr(main, "extract_with_clients", fail_if_called)
+    monkeypatch.setattr(main, "build_play_source", fake_build_play_source)
+
+    source, title, error = asyncio.run(main.source_obj_compiler("https://www.bilibili.com/video/BV1xx411c7mD"))
+    assert source is not None
+    assert title == "Bilibili P1"
+    assert error is None
+    assert not reextract_called
+    assert built_headers.get("Referer") == "https://www.bilibili.com"
+

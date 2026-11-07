@@ -1,5 +1,6 @@
 discord.py[voice]>=2.5.0
-davey
+# discord.py 2.7.1 尚未适配 davey 0.2.0 的 DAVE 过渡握手变更（会导致语音无声）
+davey>=0.1.0,<0.2.0
 PyNaCl>=1.5.0
 yt-dlp
 python-dotenv>=1.0.1
