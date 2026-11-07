@@ -9,6 +9,7 @@ venv/
 .github
 tests
 .pytest_cache
+.ruff_cache
 code_review.md
 
 # 运行时挂载的本地音频与彩蛋素材

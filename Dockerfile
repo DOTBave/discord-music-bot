@@ -1,4 +1,5 @@
-FROM python:3.12-slim
+# 基础镜像按 digest 固定（multi-arch index）；升级 Python/安全补丁时更新此 digest
+FROM python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -23,8 +24,8 @@ RUN set -eux; \
         *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
     esac; \
     base="https://github.com/denoland/deno/releases/download/v$DENO_VERSION/deno-$deno_arch.zip"; \
-    curl -fsSL -o /tmp/deno.zip "$base"; \
-    curl -fsSL -o /tmp/deno.zip.sha256sum "$base.sha256sum"; \
+    curl -fsSL --retry 3 --retry-delay 2 -o /tmp/deno.zip "$base"; \
+    curl -fsSL --retry 3 --retry-delay 2 -o /tmp/deno.zip.sha256sum "$base.sha256sum"; \
     expected="$(cut -d' ' -f1 /tmp/deno.zip.sha256sum)"; \
     actual="$(sha256sum /tmp/deno.zip | cut -d' ' -f1)"; \
     [ "$expected" = "$actual" ]; \
@@ -41,8 +42,7 @@ WORKDIR /app
 COPY requirements.txt requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
 
-COPY . .
-RUN chown -R app:app /app
+COPY --chown=app:app . .
 
 USER app
 

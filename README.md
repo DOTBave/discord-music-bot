@@ -19,7 +19,7 @@
 - ffmpeg、deno：yt-dlp 取流和 JS 挑战用
 - cookies.txt：B 站部分内容（如高码率）需要登录态
 - Docker 构建使用 `requirements.lock`（uv 生成的跨平台精确锁文件），本地开发也可以直接 `pip install -r requirements.txt`
-- 镜像里的 Deno 版本固定在 Dockerfile 的 `ARG DENO_VERSION`，构建时按 CPU 架构下载并校验 sha256
+- 镜像里的 Deno 版本固定在 Dockerfile 的 `ARG DENO_VERSION`，构建时按 CPU 架构下载并校验 sha256；基础镜像也按 digest 固定（升级时更新 Dockerfile 的 FROM）
 
 ## 配置
 
