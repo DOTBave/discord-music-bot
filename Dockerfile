@@ -16,8 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG DENO_VERSION=2.9.8
 ARG TARGETARCH
 RUN set -eux; \
-    arch="$TARGETARCH"; \
-    if [ -z "$arch" ]; then arch="$(uname -m)"; fi; \
+    arch="${TARGETARCH:-$(uname -m)}"; \
     case "$arch" in \
         amd64|x86_64) deno_arch="x86_64-unknown-linux-gnu" ;; \
         arm64|aarch64) deno_arch="aarch64-unknown-linux-gnu" ;; \
