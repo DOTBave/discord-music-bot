@@ -3,8 +3,11 @@
 运行：python -m pytest -q
 """
 import asyncio
+import os
 import shlex
 from pathlib import Path
+
+import pytest
 
 import main
 
@@ -47,6 +50,19 @@ def test_permanent_errors_win_over_retryable_signs():
 
 def test_cookiefile_only_when_regular_file():
     assert ("cookiefile" in main.YDL_OPTIONS) == Path(main.COOKIE_FILE).is_file()
+
+
+def test_readonly_cookie_file_is_copied_to_writable_temp(tmp_path):
+    src = tmp_path / "cookies.txt"
+    src.write_text("# Netscape HTTP Cookie File\n")
+    src.chmod(0o444)
+    if os.access(str(src), os.W_OK):
+        pytest.skip("running with elevated privileges; cannot simulate read-only cookie file")
+    resolved = main.resolve_cookiefile(str(src))
+    assert resolved is not None
+    assert resolved != str(src)
+    assert Path(resolved).is_file()
+    Path(resolved).unlink(missing_ok=True)
 
 
 def test_build_audio_options_quotes_headers():
