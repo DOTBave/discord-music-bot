@@ -215,28 +215,21 @@ _first_ready = False
 
 # ---------- 前缀命令 ----------
 @bot.command()
-@commands.guild_only()
-@commands.has_guild_permissions(move_members=True)
 async def kickbot(ctx, user: discord.Member):
-    print(f"[kickbot] 审计日志：{ctx.author} ({ctx.author.id}) 将 {user} ({user.id}) 移出语音频道，guild={ctx.guild.id}")
-    if user.id == ctx.author.id:
-        await ctx.reply("不能把自己移出语音频道。", mention_author=False)
-        return
+    # 删除指令消息
+    try:
+        await ctx.message.delete()
+    except discord.Forbidden:
+        print("权限不足")
+    except Exception as e:
+        print(f"信息删除失败：{e}")
     # 移出语音频道
     try:
         await user.move_to(None)
     except discord.Forbidden:
-        await ctx.reply("权限不足：机器人需要”移动成员”权限，且不能移动权限更高的成员。", mention_author=False)
-        return
+        print("权限不足")
     except Exception as e:
         print(f"踢人失败：{e}")
-        return
-    # 删除指令消息（需要管理消息权限，失败不影响踢人结果）
-    try:
-        if ctx.guild.me and ctx.guild.me.guild_permissions.manage_messages:
-            await ctx.message.delete()
-    except Exception as e:
-        print(f"信息删除失败：{e}")
 
 
 # ---------- 控制台 ----------
@@ -286,20 +279,6 @@ async def on_ready():
         print(f"JS runtime: deno -> {DENO_EXEC}")
     else:
         print("[警告] 找不到 deno，yt-dlp 无法执行 JS 挑战")
-
-
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
-        return
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.reply("权限不足：机器人缺少执行该命令所需的权限。", mention_author=False)
-    elif isinstance(error, commands.MemberNotFound):
-        await ctx.reply("找不到该成员，请检查用户名/ID。", mention_author=False)
-    elif isinstance(error, commands.NoPrivateMessage):
-        await ctx.reply("该命令只能在服务器内使用。", mention_author=False)
-    else:
-        print(f"[命令错误] {ctx.command}: {error!r}")
 
 
 @bot.event

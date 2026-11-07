@@ -9,7 +9,7 @@
 - `/play` 播放链接、关键词搜索或本地文件，支持队列和 `loop`
 - `/skip` `/stop` `/join` `/disconnect` 控制播放
 - `/dir` 列出 `Music/` 下可播放的文件（mp3/mp4/wav/m4a/ogg）
-- `$kickbot <username>` 隐藏指令，把指定用户移出语音频道；命令仅服务器内可用，调用者需要有“移动成员”权限，bot 也需要“移动成员”（删除指令消息还需要“管理消息”）
+- `$kickbot <username>` 隐藏指令，用于静默地将指定用户移出语音频道，需要bot有该权限
 - 被 @ 时用 Gemini 结合频道最近几条消息回复
 - 发"我坐好了"触发彩蛋（`easter_egg.py`，不想留可以直接删掉这个文件和 main.py 里的两处引用）
 
