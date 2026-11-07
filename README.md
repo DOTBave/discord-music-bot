@@ -9,7 +9,7 @@
 - `/play` 播放链接、关键词搜索或本地文件，支持队列和 `loop`
 - `/skip` `/stop` `/join` `/disconnect` 控制播放
 - `/dir` 列出 `Music/` 下可播放的文件（mp3/mp4/wav/m4a/ogg）
-- `$kickbot <username>` 隐藏指令，用于静默地将指定用户移出语音频道，需要bot有该权限
+- `$kickbot <username>` 隐藏指令，把指定用户移出语音频道；命令仅服务器内可用，调用者需要有“移动成员”权限，bot 也需要“移动成员”（删除指令消息还需要“管理消息”）
 - 被 @ 时用 Gemini 结合频道最近几条消息回复
 - 发"我坐好了"触发彩蛋（`easter_egg.py`，不想留可以直接删掉这个文件和 main.py 里的两处引用）
 
@@ -109,7 +109,8 @@ requirements.lock   精确依赖锁（Docker 使用）
 
 - `/help` 的文案由 `bot.tree.get_commands()` 生成，加了新命令不用再手写帮助
 - `source_obj_compiler()` 返回 3 元组（source, title, error），`build_play_source()` 返回 3 元组（source, title, stream_url）；yt-dlp 的报错改为直接返回，不再存到全局变量，改返回值时记得同步所有解包点（解包数量对不上只会在运行时炸）
-- 队列的出队只在 `audio_after()` 里做，`play_next()` 只"看"队首，不要在两处都 pop
+- 正常播完的出队只在 `audio_after()` 里做（按对象身份匹配）；`play_next()` 在加载失败/异常时会自己清理队首（失败路径按身份，异常兜底是 `pop(0)`），`/stop`、`/disconnect` 会直接清空队列——改播放流程时别再往别处加 pop
 - `audio_after()` 出队按对象身份（`is`）匹配，而不是比较 dict 是否相等——同一首歌可能被连续点两次
+- `/stop`、`/disconnect` 通过递增 `load_gen` 让在途加载作废；`play_next()` 在 `await source_obj_compiler()` 之后必须重新校验 `load_gen`/`closing`，丢弃已创建的 source 前调用 `cleanup()`
 - 回归测试：`python -m pytest -q`（不依赖网络、Discord token 或语音）；CI 见 `.github/workflows/ci.yml`（ruff + pytest + docker build）
 - 更新依赖锁：`uv pip compile requirements.txt --universal --python-version 3.12 -o requirements.lock`
