@@ -55,6 +55,8 @@ docker run -d --name my-music-bot --env-file .env \
 
 Cookies 也可以放在 `data/` 目录里，挂载 `-v "$PWD/data:/app/data"`，并在 `.env` 里设置 `COOKIES_FILE=data/cookies.txt`。注意：宿主机上文件不存在时，Docker 会在挂载点自动创建一个空目录，yt-dlp 读取 cookie 会报错，表现为每次 `/play` 都失败，所以运行前务必先 `touch` 出文件。
 
+yt-dlp 退出时会回写 cookies 文件，所以 `:ro` 挂载时程序会把 cookies 复制到容器临时目录再使用（cookie 刷新不会写回宿主机）。如果想保留 yt-dlp 刷新后的 cookies，去掉 `:ro` 改成可写挂载即可。
+
 `docker-compose.yml` 示例（仓库里没有，按需自建）：
 
 ```yaml

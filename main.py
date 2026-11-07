@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 import sys
+import tempfile
 import urllib.parse
 from pathlib import Path
 from typing import Optional
@@ -123,6 +124,30 @@ def resolve_deno():
 
 DENO_EXEC = resolve_deno()
 
+
+def resolve_cookiefile(path):
+    """返回可安全交给 yt-dlp 的 cookies 路径。
+
+    yt-dlp 在 YoutubeDL.close() 时会回写 cookies；Docker 以 :ro 挂载时回写会触发
+    [Errno 30] Read-only file system，导致每次抽取都被当成失败。只读时复制到临时目录。
+    """
+    cookie_path = Path(path)
+    if not cookie_path.is_file():
+        return None
+    if os.access(cookie_path, os.W_OK):
+        return str(cookie_path)
+    try:
+        temp_path = Path(tempfile.gettempdir()) / 'discord-music-bot-cookies.txt'
+        shutil.copyfile(cookie_path, temp_path)
+        print("[信息] cookies 文件只读，已复制到临时目录供 yt-dlp 使用（刷新不会写回宿主机）。")
+        return str(temp_path)
+    except OSError as exc:
+        print(f"[警告] cookies 文件只读且无法复制到临时目录（{exc}），将不加载 cookies。")
+        return None
+
+
+YTDLP_COOKIEFILE = resolve_cookiefile(COOKIE_FILE)
+
 YDL_OPTIONS = {
     'playlist_items': '1:5',
     'extract_flat': 'in_playlist',
@@ -148,8 +173,8 @@ YDL_OPTIONS = {
 # 只在 cookies.txt 是普通文件时才传 cookiefile：
 # - 文件缺失时 yt-dlp 会在 close() 里把空 cookie 写回文件（并发下互相覆盖）
 # - Docker 里 cookies.txt 不存在时会被挂载成同名空目录，传进去会让每次 /play 都失败
-if Path(COOKIE_FILE).is_file():
-    YDL_OPTIONS['cookiefile'] = COOKIE_FILE
+if YTDLP_COOKIEFILE:
+    YDL_OPTIONS['cookiefile'] = YTDLP_COOKIEFILE
 
 server_states = {}
 _background_tasks = set()
