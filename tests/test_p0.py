@@ -388,3 +388,53 @@ def test_ydl_options_uses_default_headers():
     assert "http_headers" not in main.YDL_OPTIONS
 
 
+def test_ydl_format_prefers_audio_and_lowest_video_without_audio_loss():
+    import yt_dlp
+
+    with yt_dlp.YoutubeDL(main.YDL_OPTIONS) as ydl:
+        # 1. 有纯音频流时，优先高码率有损音频（跳过过大的无损 flac 与视频流）
+        bili_dash = {
+            "id": "BV1",
+            "title": "Bili DASH",
+            "extractor_key": "Bilibili",
+            "formats": [
+                {"format_id": "30216", "url": "https://u/64k.m4s", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "tbr": 64.0},
+                {"format_id": "30280", "url": "https://u/192k.m4s", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "tbr": 192.0},
+                {"format_id": "30251", "url": "https://u/flac.m4s", "ext": "flac", "vcodec": "none", "acodec": "flac", "tbr": 1050.0},
+                {"format_id": "80", "url": "https://u/1080p.m4s", "ext": "mp4", "vcodec": "avc1", "acodec": "none", "height": 1080, "tbr": 3000.0},
+            ],
+        }
+        r1 = ydl.process_ie_result(bili_dash, download=False)
+        assert r1["format_id"] == "30280"
+
+        # 2. 无纯音频流、仅合并流且带 abr：跳过音频降级的 240p，选保住 128k 音质的最低画质 360p
+        combined_with_abr = {
+            "id": "yt1",
+            "title": "YT Combined",
+            "extractor_key": "Youtube",
+            "formats": [
+                {"format_id": "240p", "url": "https://u/240.mp4", "ext": "mp4", "protocol": "https", "height": 240, "vcodec": "avc1", "acodec": "mp4a", "abr": 48, "vbr": 200},
+                {"format_id": "360p", "url": "https://u/360.mp4", "ext": "mp4", "protocol": "https", "height": 360, "vcodec": "avc1", "acodec": "mp4a", "abr": 128, "vbr": 400},
+                {"format_id": "720p", "url": "https://u/720.mp4", "ext": "mp4", "protocol": "https", "height": 720, "vcodec": "avc1", "acodec": "mp4a", "abr": 128, "vbr": 1500},
+                {"format_id": "1080p", "url": "https://u/1080.mp4", "ext": "mp4", "protocol": "https", "height": 1080, "vcodec": "avc1", "acodec": "mp4a", "abr": 128, "vbr": 3000},
+            ],
+        }
+        r2 = ydl.process_ie_result(combined_with_abr, download=False)
+        assert r2["format_id"] == "360p"
+
+        # 3. 仅合并流且无 abr 信息：选分辨率最低的 360p
+        legacy_combined = {
+            "id": "BV2",
+            "title": "Bili Legacy",
+            "extractor_key": "Bilibili",
+            "formats": [
+                {"format_id": "80", "url": "https://u/1080p.mp4", "ext": "mp4", "height": 1080, "quality": 80},
+                {"format_id": "64", "url": "https://u/720p.mp4", "ext": "mp4", "height": 720, "quality": 64},
+                {"format_id": "16", "url": "https://u/360p.mp4", "ext": "mp4", "height": 360, "quality": 16},
+            ],
+        }
+        r3 = ydl.process_ie_result(legacy_combined, download=False)
+        assert r3["format_id"] == "16"
+
+
+

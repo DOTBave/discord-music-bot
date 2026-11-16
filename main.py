@@ -177,11 +177,15 @@ YTDLP_COOKIEFILE = resolve_cookiefile(COOKIE_FILE)
 YDL_OPTIONS = {
     'playlist_items': '1:5',
     'extract_flat': 'in_playlist',
+    # 优先抓纯音频流（先排除体积过大的无损 flac）；只有站点不提供独立音频流时，
+    # 才回退到音视频合并流，并由 format_sort 挑"音质不降级前提下分辨率/码率最低"的视频流
     'format': (
-        'bestaudio[extractor_key=Bilibili] / worst[extractor_key=Bilibili] / '
+        'bestaudio[protocol^=http][protocol!*=dash][protocol!*=m3u8][acodec!=flac] / '
         'bestaudio[protocol^=http][protocol!*=dash][protocol!*=m3u8] / '
-        'best[protocol^=http][protocol!*=dash][protocol!*=m3u8]'
+        'bestaudio[acodec!=flac] / bestaudio / '
+        'best[protocol^=http][protocol!*=dash][protocol!*=m3u8] / best'
     ),
+    'format_sort': ['hasaud', 'abr', 'asr', 'channels', '+res', '+fps', '+vbr', '+tbr', '+size'],
     'noplaylist': True,
     'default_search': 'ytsearch',
     'source_address': '0.0.0.0',
