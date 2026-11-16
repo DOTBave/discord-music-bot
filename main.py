@@ -67,6 +67,27 @@ def clip_text(text, limit: int = MAX_MESSAGE_LEN) -> str:
     return text[:max(0, limit - len(suffix))] + suffix
 
 
+BILIBILI_VIDEO_HOSTS = ('bilibili.com', 'www.bilibili.com', 'm.bilibili.com')
+
+
+def clean_bilibili_url(url: str) -> str:
+    """清洗 B 站视频链接：去除 spm_id_from / vd_source 等追踪与指纹参数（防 412 风控），仅保留分 P 参数 p。"""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    host = (parts.hostname or '').lower()
+    if host not in BILIBILI_VIDEO_HOSTS or not parts.path.startswith('/video/'):
+        return url
+    netloc = 'www.bilibili.com' if host == 'm.bilibili.com' else parts.netloc
+    kept_query = [
+        (k, v) for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=False)
+        if k == 'p' and v.isdigit()
+    ]
+    new_query = urllib.parse.urlencode(kept_query)
+    return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, new_query, ''))
+
+
 def split_url(raw: str):
     """识别 http(s) 链接；不是链接时返回 None（供搜索用）。
 
@@ -81,6 +102,7 @@ def split_url(raw: str):
     except ValueError:
         return None, raw
     if parts.netloc:
+        candidate = clean_bilibili_url(candidate)
         return candidate, candidate
     return None, raw
 
@@ -165,9 +187,6 @@ YDL_OPTIONS = {
     'source_address': '0.0.0.0',
     'js_runtimes': {'deno': {'path': DENO_EXEC}},
     'remote_components': ['ejs:github'],
-    'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-    },
     'socket_timeout': 20,
     'retries': 2,
     'extractor_retries': 1,

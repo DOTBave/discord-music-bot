@@ -360,3 +360,31 @@ def test_source_obj_compiler_uses_extracted_entries_directly(monkeypatch):
     assert not reextract_called
     assert built_headers.get("Referer") == "https://www.bilibili.com"
 
+
+def test_split_url_cleans_bilibili_tracking_params():
+    assert (
+        main.split_url(
+            "https://www.bilibili.com/video/BV1vf421z7fc/?spm_id_from=333.337.search-card.all.click&vd_source=5964676b268dad68fe5c"
+        )[0]
+        == "https://www.bilibili.com/video/BV1vf421z7fc/"
+    )
+    assert (
+        main.split_url(
+            "https://www.bilibili.com/video/BV1bK411W797?p=2&vd_source=abc&spm_id_from=333#reply"
+        )[0]
+        == "https://www.bilibili.com/video/BV1bK411W797?p=2"
+    )
+    assert (
+        main.split_url("https://m.bilibili.com/video/BV1vf421z7fc?share_source=copy")[0]
+        == "https://www.bilibili.com/video/BV1vf421z7fc"
+    )
+    festival_url = "https://www.bilibili.com/festival/2023honkaiimpact3gala?bvid=BV1ay4y1d77f&spm_id_from=333"
+    assert main.split_url(festival_url)[0] == festival_url
+    yt_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&si=tracking123"
+    assert main.split_url(yt_url)[0] == yt_url
+
+
+def test_ydl_options_uses_default_headers():
+    assert "http_headers" not in main.YDL_OPTIONS
+
+
